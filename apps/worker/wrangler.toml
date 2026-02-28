@@ -1,0 +1,11 @@
+name = "orbit-worker"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+# Copy this file to wrangler.toml and fill in your values.
+# Use `wrangler secret put` for sensitive values like API keys.
+
+# Example (non-secret) vars:
+# SUPABASE_URL = "https://your-project.supabase.co"
