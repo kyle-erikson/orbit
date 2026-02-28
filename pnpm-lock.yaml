@@ -111,9 +111,6 @@ importers:
       effect:
         specifier: ^3.12.4
         version: 3.19.19
-      zod:
-        specifier: ^3.24.1
-        version: 3.25.76
     devDependencies:
       '@cloudflare/workers-types':
         specifier: ^4.20250204.0
@@ -130,9 +127,9 @@ importers:
 
   packages/shared-types:
     dependencies:
-      zod:
-        specifier: ^3.24.1
-        version: 3.25.76
+      effect:
+        specifier: ^3.12.4
+        version: 3.19.19
     devDependencies:
       '@orbit/tsconfig':
         specifier: workspace:*
