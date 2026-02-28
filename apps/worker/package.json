@@ -12,6 +12,7 @@
     "@google/generative-ai": "^0.21.0",
     "@orbit/shared-types": "workspace:*",
     "@supabase/supabase-js": "^2.47.12",
+    "apify-client": "^2.22.2",
     "effect": "^3.12.4"
   },
   "devDependencies": {

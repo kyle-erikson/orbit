@@ -10,11 +10,11 @@
  * are silently ignored and receive a 200 with { ignored: true }.
  */
 
-import { Effect } from "effect";
-import type { Env } from "./env.js";
-import { runPipeline } from "./pipeline.js";
-import { handleGenerateApiKey } from "./api-key.js";
-import { jsonResponse, corsPreflightResponse } from "./lib/http.js";
+import { Effect, Match } from "effect";
+import type { Env } from "./env";
+import { runPipeline } from "./pipeline";
+import { handleGenerateApiKey } from "./api-key";
+import { jsonResponse, corsPreflightResponse } from "./lib/http";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Worker entry-point
@@ -22,74 +22,91 @@ import { jsonResponse, corsPreflightResponse } from "./lib/http.js";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
-    const { pathname } = url;
+    const { method } = request;
+    const { pathname } = new URL(request.url);
 
-    // ── CORS pre-flight ────────────────────────────────────────────────────
-    if (request.method === "OPTIONS") {
-      return corsPreflightResponse();
-    }
-
-    // ── Health check ───────────────────────────────────────────────────────
-    if (request.method === "GET" && pathname === "/health") {
-      return jsonResponse({ status: "ok", timestamp: new Date().toISOString() });
-    }
-
-    // ── Webhook: Reel submission from iOS Shortcut ─────────────────────────
-    if (request.method === "POST" && pathname === "/webhook/reel") {
-      return handleReelWebhook(request, env);
-    }
-
-    // ── API Key Management ─────────────────────────────────────────────────
-    if (request.method === "POST" && pathname === "/api/keys") {
-      return handleGenerateApiKey(request, env);
-    }
-
-    return jsonResponse({ error: "Not found" }, 404);
+    return Match.value({ method, pathname }).pipe(
+      Match.when({ method: "OPTIONS" }, () =>
+        Promise.resolve(corsPreflightResponse())
+      ),
+      Match.when({ method: "GET", pathname: "/health" }, () =>
+        Promise.resolve(
+          jsonResponse({ status: "ok", timestamp: new Date().toISOString() })
+        )
+      ),
+      Match.when({ method: "POST", pathname: "/webhook/reel" }, () =>
+        handleReelWebhook(request, env)
+      ),
+      Match.when({ method: "POST", pathname: "/api/keys" }, () =>
+        handleGenerateApiKey(request, env)
+      ),
+      Match.orElse(() =>
+        Promise.resolve(jsonResponse({ error: "Not found" }, 404))
+      )
+    );
   },
 } satisfies ExportedHandler<Env>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Reel webhook handler
+//
+// The pipeline is transformed into Effect<Response, never> by mapping the
+// success value and catching every typed error variant before running.
+// This means we never need to inspect Exit or Cause tags manually.
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function handleReelWebhook(request: Request, env: Env): Promise<Response> {
-  const exit = await Effect.runPromiseExit(runPipeline(request, env));
+function handleReelWebhook(request: Request, env: Env): Promise<Response> {
+  const program = runPipeline(request, env).pipe(
+    // Success path
+    Effect.map((saved) => jsonResponse({ success: true, reel: saved }, 201)),
 
-  if (exit._tag === "Success") {
-    return jsonResponse({ success: true, reel: exit.value }, 201);
-  }
+    // Silently ignore unsupported platforms
+    Effect.catchTag("UnsupportedPlatformError", (err) =>
+      Effect.succeed(
+        jsonResponse(
+          {
+            success: false,
+            ignored: true,
+            reason: `URL is not a supported Instagram or Facebook Reel: ${err.url}`,
+          },
+          200
+        )
+      )
+    ),
 
-  const { cause } = exit;
+    // Map every remaining typed error to an HTTP response
+    Effect.catchTags({
+      ParseError: (err) =>
+        Effect.succeed(
+          jsonResponse({ success: false, error: err._tag, message: err.message }, 400)
+        ),
+      AuthError: (err) =>
+        Effect.succeed(
+          jsonResponse({ success: false, error: err._tag, message: err.message }, 401)
+        ),
+      ApifyError: (err) =>
+        Effect.succeed(
+          jsonResponse({ success: false, error: err._tag, message: err.message }, 500)
+        ),
+      GeminiError: (err) =>
+        Effect.succeed(
+          jsonResponse({ success: false, error: err._tag, message: err.message }, 500)
+        ),
+      DatabaseError: (err) =>
+        Effect.succeed(
+          jsonResponse({ success: false, error: err._tag, message: err.message }, 500)
+        ),
+    }),
 
-  if (cause._tag === "Fail") {
-    const err = cause.error;
-
-    // Unsupported platform — silently ignore as instructed
-    if (err._tag === "UnsupportedPlatformError") {
-      return jsonResponse(
-        {
-          success: false,
-          ignored: true,
-          reason: `URL is not a supported Instagram or Facebook Reel: ${err.url}`,
-        },
-        200
+    // Any unhandled defect (programming error / unexpected throw) is logged and
+    // converted to a 500 rather than crashing the worker.
+    Effect.catchAllCause((cause) => {
+      console.error("Unhandled pipeline defect:", cause);
+      return Effect.succeed(
+        jsonResponse({ success: false, error: "InternalServerError" }, 500)
       );
-    }
+    })
+  );
 
-    // Map typed pipeline errors to HTTP status codes
-    const status: number =
-      err._tag === "ParseError" ? 400
-      : err._tag === "AuthError"  ? 401
-      : 500;
-
-    return jsonResponse(
-      { success: false, error: err._tag, message: (err as { message?: string }).message ?? "An error occurred" },
-      status
-    );
-  }
-
-  // Defects / unexpected failures
-  console.error("Unhandled pipeline defect:", cause);
-  return jsonResponse({ success: false, error: "InternalServerError" }, 500);
+  return Effect.runPromise(program);
 }

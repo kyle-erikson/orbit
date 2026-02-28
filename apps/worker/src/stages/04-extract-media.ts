@@ -3,18 +3,27 @@
  *
  * Stage 4 – Extract Video Media via Apify
  *
- * Selects the correct Apify actor based on the detected platform, starts a run,
- * polls until SUCCEEDED, and returns the mp4 URL + caption.
+ * Uses the official `apify-client` package instead of raw HTTP requests.
+ * `actor.call()` handles start + polling internally, so there is no manual
+ * polling loop here.  Dataset items are fetched after the run completes via
+ * `client.dataset(run.defaultDatasetId).listItems()`.
  *
  * Actors used:
- *   Instagram – apify~instagram-reel-scraper
- *   Facebook  – apify~facebook-reel-scraper
+ *   Instagram – apify/instagram-reel-scraper
+ *   Facebook  – apify/facebook-reel-scraper
+ *
+ * NOTE: We import from the main 'apify-client' entry. Wrangler's bundler
+ * automatically resolves to the pre-built browser bundle (dist/bundle.js) via
+ * the package.json "browser" field when targeting a Worker/edge runtime — so
+ * we get correct types without needing the un-typed '/browser' sub-path export.
+ * nodejs_compat must be enabled in wrangler.toml (it is).
  */
 
 import { Effect, Schema } from "effect";
+import { ApifyClient } from "apify-client";
 import { ApifyError } from "@orbit/shared-types";
-import type { Env } from "../env.js";
-import type { DetectedRequest } from "./03-detect-platform.js";
+import type { Env } from "../env";
+import type { DetectedRequest } from "./03-detect-platform";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Context type produced by this stage
@@ -34,58 +43,20 @@ export const ExtractedMediaSchema = Schema.Struct({
 export type ExtractedMedia = Schema.Schema.Type<typeof ExtractedMediaSchema>;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Apify internal types
+// Actor configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface ApifyRunResponse {
-  data: { id: string; status: string };
+/** Maps a platform to its Apify Store actor ID. */
+function actorIdFor(platform: string): string {
+  return platform === "facebook"
+    ? "apify/facebook-reel-scraper"
+    : "apify/instagram-reel-scraper";
 }
 
-interface ApifyDatasetItem {
+// Dataset item shape returned by both actors
+interface ReelDatasetItem {
   videoUrl?: string;
   caption?: string;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-const APIFY_BASE = "https://api.apify.com/v2";
-const MAX_POLLS = 20;
-const POLL_INTERVAL_MS = 3_000;
-
-/** Maps a platform to its Apify actor slug. */
-function actorSlugFor(platform: string): string {
-  return platform === "facebook"
-    ? "apify~facebook-reel-scraper"
-    : "apify~instagram-reel-scraper";
-}
-
-/**
- * Polls the Apify run status until it reaches SUCCEEDED or a terminal failure
- * state, or until MAX_POLLS is exhausted.
- */
-async function waitForApifyRun(runId: string, apiToken: string): Promise<void> {
-  for (let i = 0; i < MAX_POLLS; i++) {
-    const resp = await fetch(
-      `${APIFY_BASE}/actor-runs/${runId}?token=${apiToken}`
-    );
-    const json = (await resp.json()) as { data: { status: string } };
-
-    switch (json.data.status) {
-      case "SUCCEEDED":
-        return;
-      case "FAILED":
-      case "ABORTED":
-      case "TIMED-OUT":
-        throw new Error(
-          `Apify run ${runId} ended with status: ${json.data.status}`
-        );
-      default:
-        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-    }
-  }
-  throw new Error("Apify run timed out after maximum polls");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -93,8 +64,11 @@ async function waitForApifyRun(runId: string, apiToken: string): Promise<void> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Starts an Apify actor run for the appropriate platform, waits for completion,
- * and extracts the video URL and caption from the dataset.
+ * Runs the appropriate Apify actor for the detected platform.
+ *
+ * `actor.call()` starts the run and waits for it to reach a terminal state —
+ * no manual polling required.  The resolved run object carries `defaultDatasetId`
+ * which is used to fetch dataset items in one additional request.
  *
  * @returns ExtractedMedia on success, ApifyError on any failure.
  */
@@ -104,42 +78,43 @@ export function extractVideoMedia(
 ): Effect.Effect<ExtractedMedia, ApifyError> {
   return Effect.tryPromise({
     try: async () => {
-      const actorId = actorSlugFor(ctx.platform);
+      const client = new ApifyClient({
+        token: env.APIFY_API_TOKEN,
+        // Built-in exponential backoff; 8 retries by default.
+        // timeoutSecs governs the overall wall-clock limit for `.call()`.
+        timeoutSecs: 120,
+      });
 
-      // Start the actor run
-      const runResp = await fetch(
-        `${APIFY_BASE}/acts/${actorId}/runs?token=${env.APIFY_API_TOKEN}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ directUrls: [ctx.url], resultsLimit: 1 }),
-        }
-      );
+      const actorId = actorIdFor(ctx.platform);
 
-      if (!runResp.ok) {
-        throw new Error(`Apify run initiation failed: ${runResp.statusText}`);
+      // Start the actor and block until the run reaches a terminal state.
+      // The client handles all polling + exponential backoff internally.
+      const run = await client.actor(actorId).call({
+        directUrls: [ctx.url],
+        resultsLimit: 1,
+      });
+
+      if (run.status !== "SUCCEEDED") {
+        throw new Error(
+          `Apify actor run ended with non-success status: ${run.status}`
+        );
       }
 
-      const runData = (await runResp.json()) as ApifyRunResponse;
-      const runId = runData.data.id;
+      // Fetch up to 1 item from the run's default dataset
+      const { items } = await client
+        .dataset(run.defaultDatasetId)
+        .listItems({ limit: 1 });
 
-      // Poll until complete
-      await waitForApifyRun(runId, env.APIFY_API_TOKEN);
+      const item = items[0] as ReelDatasetItem | undefined;
 
-      // Fetch dataset results
-      const datasetResp = await fetch(
-        `${APIFY_BASE}/actor-runs/${runId}/dataset/items?token=${env.APIFY_API_TOKEN}`
-      );
-      const items = (await datasetResp.json()) as ApifyDatasetItem[];
-
-      if (!items.length || !items[0].videoUrl) {
+      if (!item?.videoUrl) {
         throw new Error("Apify returned no video URL for the given Reel");
       }
 
       return {
         ...ctx,
-        mp4Url: items[0].videoUrl,
-        caption: items[0].caption ?? "",
+        mp4Url: item.videoUrl,
+        caption: item.caption ?? "",
       };
     },
     catch: (e) =>
