@@ -45,9 +45,14 @@ export function persistToDatabase(
           tags: ctx.extraction.tags,
           key_takeaways: ctx.extraction.key_takeaways,
           embedding: JSON.stringify(ctx.embedding),
+          // ── Debug / observability columns ──────────────────────────────────
+          caption: ctx.caption || null,
+          apify_raw: ctx.apifyRaw ?? null,
+          gemini_prompt: ctx.geminiPrompt,
+          gemini_raw: ctx.geminiRaw,
         })
         .select(
-          "id, user_id, original_url, platform, title, summary, category, tags, key_takeaways, created_at"
+          "id, user_id, original_url, platform, title, summary, category, tags, key_takeaways, caption, created_at"
         )
         .single();
 

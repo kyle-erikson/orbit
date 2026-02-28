@@ -24,6 +24,12 @@ export const EmbeddedResultSchema = Schema.Struct({
   platform: Schema.String,
   mp4Url: Schema.String,
   caption: Schema.String,
+  /** Full raw Apify dataset item, carried forward from Stage 4 */
+  apifyRaw: Schema.Unknown,
+  /** Exact prompt string sent to Gemini */
+  geminiPrompt: Schema.String,
+  /** Raw Gemini response text before JSON parsing */
+  geminiRaw: Schema.String,
   extraction: ReelExtractionSchema,
   /** Dense float vector from text-embedding-004 */
   embedding: Schema.Array(Schema.Number),

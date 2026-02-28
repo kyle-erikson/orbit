@@ -26,6 +26,12 @@ export const AIResultSchema = Schema.Struct({
   platform: Schema.String,
   mp4Url: Schema.String,
   caption: Schema.String,
+  /** Full raw Apify dataset item, carried forward from Stage 4 */
+  apifyRaw: Schema.Unknown,
+  /** Exact prompt string sent to Gemini */
+  geminiPrompt: Schema.String,
+  /** Raw Gemini response text before JSON parsing */
+  geminiRaw: Schema.String,
   /** Structured extraction validated against ReelExtractionSchema */
   extraction: ReelExtractionSchema,
 });
@@ -119,7 +125,12 @@ export function generateAISummary(
       const decodeExtraction = Schema.decodeUnknownSync(ReelExtractionSchema);
       const extraction: ReelExtraction = decodeExtraction(rawParsed);
 
-      return { ...ctx, extraction };
+      return {
+        ...ctx,
+        geminiPrompt: prompt,
+        geminiRaw: rawText,
+        extraction,
+      };
     },
     catch: (e) =>
       new GeminiError({ message: "Gemini summarization failed", cause: e }),

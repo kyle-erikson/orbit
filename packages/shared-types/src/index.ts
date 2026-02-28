@@ -113,6 +113,8 @@ export const SavedReelSchema = Schema.Struct({
   category: Schema.String,
   tags: Schema.Array(Schema.String),
   key_takeaways: Schema.Array(KeyTakeawaySchema),
+  /** Raw caption scraped from the Reel post (null when not available) */
+  caption: Schema.NullOr(Schema.String),
   created_at: Schema.String,
 });
 

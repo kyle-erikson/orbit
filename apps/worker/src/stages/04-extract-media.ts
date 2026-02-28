@@ -38,6 +38,8 @@ export const ExtractedMediaSchema = Schema.Struct({
   mp4Url: Schema.String,
   /** Original caption / description text from the post */
   caption: Schema.String,
+  /** Full raw JSON payload returned by the Apify dataset item */
+  apifyRaw: Schema.Unknown,
 });
 
 export type ExtractedMedia = Schema.Schema.Type<typeof ExtractedMediaSchema>;
@@ -57,6 +59,7 @@ function actorIdFor(platform: string): string {
 interface ReelDatasetItem {
   videoUrl?: string;
   caption?: string;
+  [key: string]: unknown;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -115,6 +118,7 @@ export function extractVideoMedia(
         ...ctx,
         mp4Url: item.videoUrl,
         caption: item.caption ?? "",
+        apifyRaw: item,
       };
     },
     catch: (e) =>
